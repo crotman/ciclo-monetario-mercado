@@ -1,0 +1,93 @@
+---
+title: "Untitled"
+author: "André"
+date: "2023-07-20"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+
+```
+
+
+
+```{r}
+
+dados_juros = read_rds("dados-preparados/dados_juros.rds")
+dados_preco = read_rds("dados-preparados/dados_preco.rds")
+dados_receita = read_rds("dados-preparados/dados_receita.rds")
+
+
+#2002 - 2006
+#2009 - 2011
+#2015 - 2018
+
+
+monta_indice_real <- function(
+        data_inicio_ciclo = 2002, 
+        data_fim_ciclo = 2006, 
+        inicio_impacto = 0.5, #em relação ao tamanho do ciclo
+        final_impacto_meses = 12
+){
+    
+    
+    
+    datas_no_ciclo <- tibble(
+        data = seq(make_date(data_inicio_ciclo,1,1), make_date(data_fim_ciclo,1,1), by = "month" )
+    ) %>% 
+        slice_tail(prop = 0.5)
+    
+    datas_impacto = tibble(
+        data = seq(
+            datas_no_ciclo$data %>% last() %>% lubridate::add_with_rollback(months(1)), 
+            length.out = final_impacto_meses,
+            by = "month"
+        ) 
+    )
+    
+    datas_analise <- bind_rows(
+        datas_no_ciclo ,
+        datas_impacto
+    ) %>% 
+        cross_join(
+            dados_receita %>% select(ticker) %>%  distinct()
+        )
+    
+    
+    dados_receita_completos <- dados_receita %>% 
+        right_join(
+            datas_analise,
+            by = join_by(
+                datas == data,
+                ticker == ticker
+            )
+        ) %>% 
+        arrange(datas) %>% 
+        group_by(ticker) %>% 
+        mutate(
+            n_obs = sum(!is.na(receita))
+        ) %>%
+        fill(
+            receita,
+            .direction = "down"
+        ) %>% 
+        fill(
+            receita,
+            .direction = "up"
+        ) %>% 
+        ungroup() 
+
+
+        
+    
+}
+
+
+
+```
+
