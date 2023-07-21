@@ -11,6 +11,8 @@ knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
 library(lubridate)
+library(shiny)
+
 
 ```
 
@@ -20,12 +22,105 @@ library(lubridate)
 
 dados_juros = read_rds("dados-preparados/dados_juros.rds")
 dados_preco = read_rds("dados-preparados/dados_preco.rds")
-dados_receita = read_rds("dados-preparados/dados_receita.rds")
+
+
+dados_receita = read_rds("dados-preparados/dados_receita.rds") %>% 
+    mutate(
+        receita = as.numeric(receita)
+    ) %>% 
+    filter(receita != 0) %>% 
+    filter(
+        !str_detect(ticker, "BRAP4")
+    ) %>% 
+    filter(
+        !str_detect(ticker, "BRAP3")
+    )
+    
+
 
 
 #2002 - 2006
 #2009 - 2011
 #2015 - 2018
+
+
+data_inicial <- lubridate::floor_date(min(dados_receita$datas), "month")
+
+data_final <- lubridate::floor_date(max(dados_receita$datas), "month")
+
+
+datas_analise <- tibble(
+    data = seq.Date(data_inicial, data_final, by = "day")
+    ) %>% 
+    cross_join(
+        dados_receita %>% select(ticker) %>%  distinct()
+    )
+
+
+dados_receita_completos <- dados_receita %>% 
+    right_join(
+        datas_analise,
+        by = join_by(
+            datas == data,
+            ticker == ticker
+        )
+    ) %>% 
+    mutate(
+        data_referencia = make_date(year(datas) + 1, 12 ,31)
+    ) %>% 
+    arrange(datas) %>% 
+    group_by(ticker, data_referencia) %>% 
+    mutate(
+        n_obs = sum(!is.na(receita))
+    ) %>%
+    ungroup() %>% 
+    filter(
+        n_obs >= 1
+    ) %>% 
+    group_by(ticker, data_referencia) %>% 
+    fill(
+        receita,
+        .direction = "down"
+    ) %>% 
+    fill(
+        receita,
+        .direction = "up"
+    ) %>% 
+    ungroup() %>% 
+    arrange(datas) %>% 
+    mutate(
+        crescimento_receita = receita / lag(receita) - 1,
+        .by = c(ticker, data_referencia)
+    ) %>% 
+    replace_na(
+        list(crescimento_receita = 0)
+    ) %>% 
+    mutate(
+        indice_receita = cumprod(1 + crescimento_receita),
+        .by = ticker
+    )
+
+
+
+receita_equal <- dados_receita_completos %>% 
+    summarise(
+        crescimento_receita = mean(crescimento_receita),
+        .by = datas
+    ) %>% 
+    mutate(
+        indice_receitas = cumprod(1 + crescimento_receita)
+    )
+
+
+receita_ponderada <- dados_receita_completos %>% 
+    summarise(
+        crescimento_receita = weighted.mean(crescimento_receita, receita),
+        .by = datas
+    ) %>% 
+    mutate(
+        indice_receitas = cumprod(1 + crescimento_receita)
+    )
+
 
 
 monta_indice_real <- function(
@@ -34,9 +129,7 @@ monta_indice_real <- function(
         inicio_impacto = 0.5, #em relação ao tamanho do ciclo
         final_impacto_meses = 12
 ){
-    
-    
-    
+
     datas_no_ciclo <- tibble(
         data = seq(make_date(data_inicio_ciclo,1,1), make_date(data_fim_ciclo,1,1), by = "month" )
     ) %>% 
@@ -49,45 +142,110 @@ monta_indice_real <- function(
             by = "month"
         ) 
     )
-    
-    datas_analise <- bind_rows(
-        datas_no_ciclo ,
-        datas_impacto
-    ) %>% 
-        cross_join(
-            dados_receita %>% select(ticker) %>%  distinct()
-        )
-    
-    
-    dados_receita_completos <- dados_receita %>% 
-        right_join(
-            datas_analise,
-            by = join_by(
-                datas == data,
-                ticker == ticker
-            )
-        ) %>% 
-        arrange(datas) %>% 
-        group_by(ticker) %>% 
-        mutate(
-            n_obs = sum(!is.na(receita))
-        ) %>%
-        fill(
-            receita,
-            .direction = "down"
-        ) %>% 
-        fill(
-            receita,
-            .direction = "up"
-        ) %>% 
-        ungroup() 
 
 
-        
-    
 }
 
 
 
 ```
+
+
+
+
+
+```{r}
+
+
+inputPanel(
+    
+  selectInput(
+      inputId = "ticker", 
+      label = "Ticker:",
+      multiple = FALSE,
+      choices = dados_receita$ticker %>%  unique() %>%  sort()
+    )
+  
+)
+
+
+
+receita_filtrada = reactive({
+   
+    dados_receita_completos %>% 
+        filter(ticker %in% input$ticker )
+}) 
+
+
+renderPlot({
+    
+ 
+    ggplot(receita_filtrada()) +
+        geom_line(
+            aes(
+                x = datas,
+                y = indice_receita
+            )
+        )
+       
+    
+})
+
+
+
+```
+
+
+```{r}
+
+
+renderPlot({
+    
+ 
+    ggplot(receita_equal) +
+        ggtitle("receita equal") +
+        geom_line(
+            aes(
+                x = datas,
+                y = indice_receitas
+            )
+        )
+       
+    
+})
+
+
+
+
+```
+
+
+
+```{r}
+
+
+renderPlot({
+    
+ 
+    ggplot(receita_ponderada) +
+        ggtitle("receita ponderada") +
+        geom_line(
+            aes(
+                x = datas,
+                y = indice_receitas
+            )
+        )
+       
+    
+})
+
+
+
+
+```
+
+
+
+
+
 
