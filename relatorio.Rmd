@@ -21,27 +21,24 @@ library(shiny)
 ```{r}
 
 dados_juros = read_rds("dados-preparados/dados_juros.rds")
+
+
 dados_preco = read_rds("dados-preparados/dados_preco.rds")
 
 
 dados_receita = read_rds("dados-preparados/dados_receita.rds") %>% 
-    mutate(
-        receita = as.numeric(receita)
-    ) %>% 
     filter(receita != 0) %>% 
     filter(
         !str_detect(ticker, "BRAP4")
     ) %>% 
     filter(
         !str_detect(ticker, "BRAP3")
+    ) %>% 
+    mutate(
+        prefixo = str_extract(ticker, "(^.+?) ", group = 1)
     )
     
 
-
-
-#2002 - 2006
-#2009 - 2011
-#2015 - 2018
 
 
 data_inicial <- lubridate::floor_date(min(dados_receita$datas), "month")
@@ -57,6 +54,42 @@ datas_analise <- tibble(
     )
 
 
+datas_analise_preco <- tibble(
+    data = seq.Date(data_inicial, data_final, by = "day")
+    ) %>% 
+    cross_join(
+        dados_receita %>% select(prefixo) %>%  distinct()
+    )
+
+
+
+dados_preco_completos = dados_preco %>% 
+    right_join(
+        datas_analise_preco,
+        by = join_by(
+            date == data,
+            prefixo == prefixo
+        )
+    ) %>% 
+    arrange(date) %>% 
+    group_by(prefixo) %>% 
+    fill(
+        preco,
+        .direction = "down"
+    ) %>% 
+    fill(
+        mkt_cap,
+        .direction = "down"
+    ) %>% 
+    ungroup() %>% 
+    mutate(
+        retorno_preco = preco /lag(preco) - 1 ,
+        .by = prefixo
+    )
+    
+
+    
+    
 dados_receita_completos <- dados_receita %>% 
     right_join(
         datas_analise,
@@ -69,28 +102,16 @@ dados_receita_completos <- dados_receita %>%
         data_referencia = make_date(year(datas) + 1, 12 ,31)
     ) %>% 
     arrange(datas) %>% 
-    group_by(ticker, data_referencia) %>% 
-    mutate(
-        n_obs = sum(!is.na(receita))
-    ) %>%
-    ungroup() %>% 
-    filter(
-        n_obs >= 1
-    ) %>% 
-    group_by(ticker, data_referencia) %>% 
+    group_by(ticker) %>% 
     fill(
         receita,
         .direction = "down"
-    ) %>% 
-    fill(
-        receita,
-        .direction = "up"
     ) %>% 
     ungroup() %>% 
     arrange(datas) %>% 
     mutate(
         crescimento_receita = receita / lag(receita) - 1,
-        .by = c(ticker, data_referencia)
+        .by = c(ticker)
     ) %>% 
     replace_na(
         list(crescimento_receita = 0)
@@ -98,7 +119,12 @@ dados_receita_completos <- dados_receita %>%
     mutate(
         indice_receita = cumprod(1 + crescimento_receita),
         .by = ticker
+    ) %>% 
+    mutate(
+        prefixo = str_extract(ticker, "(^.+?) ", group = 1)
     )
+
+
 
 
 
@@ -244,6 +270,113 @@ renderPlot({
 
 ```
 
+
+
+
+
+
+```{r}
+
+
+ciclos <- tribble(
+    ~ciclo,           ~data_inicio, ~data_fim,
+    "2002 - 2006"    , make_date(2002,1,1), make_date(2006,12,31),
+    "2011 - 2012"    , make_date(2011,8,1), make_date(2012,3,16),
+    "2016 - 2018"    , make_date(2016,1,1), make_date(2018,12,28)
+    
+)
+
+
+
+
+#2002 - 2006 - ondee começa os dados
+#1/8/2011 - 16/3/2012
+#1/1/2016 - 28/12/2018
+
+min(dados_receita$datas)
+
+
+inputPanel(
+    
+  selectInput(
+      inputId = "ciclo", 
+      label = "Ciclo:",
+      multiple = FALSE,
+      choices = c(
+        "2002 - 2006",
+        "2011 - 2012",
+        "2016 - 2018"
+      )
+    ),
+  
+  radioButtons(
+      inputId = "tipo_ponderacao",
+      label = "Tipo de Ponderação",
+      choices = c("Equal", "MarketCap")  
+  )
+  
+  
+)
+
+
+
+
+renderPlot({
+
+    
+    input_ciclo = "2011 - 2012"
+    input_tipo_ponderacao = "Equal"
+    
+    ciclo_escolhido <- ciclos %>% 
+        filter(
+            ciclo == input_ciclo
+        )
+    
+    dados_juros_grafico = dados_juros %>% 
+        filter(
+            data_analise >= ciclo_escolhido$data_inicio,
+            data_analise <= ciclo_escolhido$data_fim
+        )
+    
+    dados_receita_completos_grafico = dados_receita_completos %>% 
+        filter(
+            datas >= ciclo_escolhido$data_inicio,
+            datas <= ciclo_escolhido$data_fim
+        ) %>%
+        left_join(
+            dados_preco_completos %>%  select(prefixo, preco, mkt_cap, date ),
+            by = join_by(
+                prefixo == prefixo,
+                datas == date
+            )
+        ) %>% 
+        filter(
+            !is.na(mkt_cap), !is.na(preco)
+        ) %>% 
+        mutate(
+            ponderacao = if_else(input_tipo_ponderacao == "Equal", 1, mkt_cap)
+        ) %>% 
+        summarise(
+            crescimento_receita = weighted.mean(x = crescimento_receita, w = ponderacao, na.rm = TRUE),
+            retorno_preco = weighted.mean(x = retorno_preco, w = ponderacao, na.rm = TRUE),
+            .by = datas
+        ) %>% 
+        arrange(datas) %>% 
+        mutate(
+            indice_precos = cumprod(1 + retorno_preco),
+            indice_receitas = cumprod(1 + crescimento_receita)
+        )
+
+
+    
+        
+    
+    
+})
+
+
+
+```
 
 
 
