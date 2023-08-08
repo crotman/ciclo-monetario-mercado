@@ -7,12 +7,12 @@ runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 
 library(tidyverse)
 library(lubridate)
 library(shiny)
-
+library(scales)
 
 ```
 
@@ -302,29 +302,24 @@ inputPanel(
       inputId = "ciclo", 
       label = "Ciclo:",
       multiple = FALSE,
-      choices = c(
-        "2002 - 2006",
-        "2011 - 2012",
-        "2016 - 2018"
-      )
+      choices = ciclos$ciclo
     ),
   
-  radioButtons(
-      inputId = "tipo_ponderacao",
-      label = "Tipo de Ponderação",
-      choices = c("Equal", "MarketCap")  
-  )
+  # radioButtons(
+  #     inputId = "tipo_ponderacao",
+  #     label = "Tipo de Ponderação",
+  #     choices = c("Equal", "MarketCap")  
+  # )
   
   
 )
 
 
 
-
 renderPlot({
 
     
-    input_ciclo = "2011 - 2012"
+    input_ciclo = input$ciclo
     input_tipo_ponderacao = "Equal"
     
     ciclo_escolhido <- ciclos %>% 
@@ -338,39 +333,133 @@ renderPlot({
             data_analise <= ciclo_escolhido$data_fim
         )
     
-    dados_receita_completos_grafico = dados_receita_completos %>% 
+
+    dados_receita_completos_grafico = dados_preco_completos %>%  select(prefixo, preco, retorno_preco, mkt_cap, date ) %>% 
         filter(
-            datas >= ciclo_escolhido$data_inicio,
-            datas <= ciclo_escolhido$data_fim
+            date >= ciclo_escolhido$data_inicio,
+            date <= ciclo_escolhido$data_fim
         ) %>%
         left_join(
-            dados_preco_completos %>%  select(prefixo, preco, mkt_cap, date ),
+            dados_receita_completos,
             by = join_by(
                 prefixo == prefixo,
-                datas == date
+                date == datas
             )
+        ) %>%
+        rename(
+            datas = date
         ) %>% 
         filter(
             !is.na(mkt_cap), !is.na(preco)
         ) %>% 
         mutate(
-            ponderacao = if_else(input_tipo_ponderacao == "Equal", 1, mkt_cap)
+            tipo_ponderacao = input_tipo_ponderacao
+        ) %>% 
+        mutate(
+            ponderacao = if_else(tipo_ponderacao == "Equal", 1, mkt_cap)
+        ) %>% 
+        replace_na(
+            list(retorno_preco = 0)
         ) %>% 
         summarise(
             crescimento_receita = weighted.mean(x = crescimento_receita, w = ponderacao, na.rm = TRUE),
             retorno_preco = weighted.mean(x = retorno_preco, w = ponderacao, na.rm = TRUE),
+            
             .by = datas
         ) %>% 
         arrange(datas) %>% 
         mutate(
             indice_precos = cumprod(1 + retorno_preco),
             indice_receitas = cumprod(1 + crescimento_receita)
-        )
+        ) %>% 
+        left_join(
+            dados_juros_grafico %>% select(data_analise, di_4y, ntnb_4y),
+            by = join_by(datas == data_analise)
+        ) %>% 
+        fill(
+            di_4y,
+            ntnb_4y,
+            .direction = "down"
+        ) %>% 
+        mutate(
+            datas = as.Date(datas)
+        ) %>%             
+        mutate(
+            dias_inicio = (datas - min(datas)) %>%  as.integer()
+        ) 
 
-
-    
         
     
+    
+    
+
+    scaling_factor <- 13 / 1.2
+    
+    
+    grafico <- ggplot(
+        dados_receita_completos_grafico,
+        aes(x = datas %>%  as.Date())) +
+        geom_line(
+            aes(
+                y = di_4y / scaling_factor,
+                color = "DI 4y"
+            ),
+            linetype = "dashed",
+            size = 1,
+            show.legend = TRUE
+        ) +
+        geom_line(
+            aes(
+                y = indice_precos,
+                color = "Índice Preços"
+            ),
+            size = 1,
+            show.legend = TRUE
+            
+        ) +
+        geom_line(
+            aes(
+                y = indice_receitas,
+                color = "Índice Receitas"    
+            ),
+            size = 1,
+            show.legend = TRUE
+        ) +
+        scale_color_manual(
+            values = c(
+                "Índice Preços" = "blue",
+                "Índice Receitas" = "green",
+                "DI 4y" = "darkred"
+            )                
+        ) + 
+        scale_y_continuous(
+            "Preços/Receitas",
+            sec.axis = sec_axis(~. * scaling_factor, name = "DI 4y")
+        ) +
+        scale_x_date(
+            
+            labels = date_format("%m/%y"),
+            breaks = date_breaks(width = "1 month"),
+            sec.axis = sec_axis(
+                trans = identity,
+                breaks = date_breaks(width = "1 month"),
+                labels = date_format("%m/%y")
+            )
+        ) +
+        geom_hline(
+            yintercept = 1,
+            linewidth = 1
+        ) +
+        labs(
+            x = "Data",
+            color = "Série"
+        ) +
+        theme_minimal() +
+        theme(
+            legend.position = "top"
+        )
+        
+    grafico
     
 })
 
